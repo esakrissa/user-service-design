@@ -1,0 +1,19 @@
+graph TD
+    subgraph "Cognito Failure"
+        COG[Cognito Down] --> AUTH[No new auth]
+        AUTH --> NEWU[New users blocked]
+        AUTH --> REFRESH[Token refresh fails]
+        COG -.->|Existing tokens| API[API still works]
+    end
+    
+    subgraph "DynamoDB Failure"
+        DDB[DynamoDB Down] --> CRUD[All CRUD fails]
+        CRUD --> TRIGGER[Cognito triggers fail]
+        CRUD --> EVENTS[No events published]
+    end
+    
+    subgraph "EventBridge Failure"
+        EB[EventBridge Down] --> ASYNC[Async operations fail]
+        ASYNC --> DLQ[Events queue in DLQ]
+        EB -.->|Sync operations| SYNC[Still work]
+    end

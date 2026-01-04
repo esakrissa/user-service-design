@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Handler
+    participant DynamoDB
+    participant OutboxPoller
+    participant EventBridge
+
+    Handler->>DynamoDB: TransactWrite(data + outbox)
+    DynamoDB-->>Handler: Success
+    Handler-->>Client: Response
+    
+    Note over OutboxPoller: Runs every 1 minute
+    OutboxPoller->>DynamoDB: Query outbox
+    DynamoDB-->>OutboxPoller: Pending events
+    OutboxPoller->>EventBridge: PutEvents
+    EventBridge-->>OutboxPoller: Success
+    OutboxPoller->>DynamoDB: Delete from outbox
