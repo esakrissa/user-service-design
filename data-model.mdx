@@ -73,21 +73,11 @@ A user can have multiple email addresses. Exactly one must be marked as primary.
 
 ### Complete Table Layout
 
-```
-┌─────────────────────┬──────────────────────┬─────────────────────────┬─────────────────────┬─────────────────┐
-│ PK                  │ SK                   │ GSI1PK                  │ GSI1SK              │ Attributes      │
-├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
-│ USER#abc-123        │ PROFILE              │ EMAIL#john@example.com  │ USER#abc-123        │ firstName,      │
-│                     │                      │                         │                     │ lastName,       │
-│                     │                      │                         │                     │ status, etc.    │
-├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
-│ USER#abc-123        │ EMAIL#email-001      │ EMAIL#john@example.com  │ USER#abc-123        │ isPrimary: true │
-│                     │                      │                         │                     │ isVerified: true│
-├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
-│ USER#abc-123        │ EMAIL#email-002      │ EMAIL#john.work@co.com  │ USER#abc-123        │ isPrimary: false│
-│                     │                      │                         │                     │ isVerified: true│
-└─────────────────────┴──────────────────────┴─────────────────────────┴─────────────────────┴─────────────────┘
-```
+| PK | SK | GSI1PK | GSI1SK | Attributes |
+|---|---|---|---|---|
+| USER#abc-123 | PROFILE | EMAIL#john@example.com | USER#abc-123 | firstName, lastName, status, etc. |
+| USER#abc-123 | EMAIL#email-001 | EMAIL#john@example.com | USER#abc-123 | isPrimary: true, isVerified: true |
+| USER#abc-123 | EMAIL#email-002 | EMAIL#john.work@co.com | USER#abc-123 | isPrimary: false, isVerified: true |
 
 ## Access Patterns
 
