@@ -205,8 +205,6 @@ export const handler = async (event: PostConfirmationTriggerEvent) => {
           Item: {
             PK: `USER#${sub}`,
             SK: 'PROFILE',
-            GSI1PK: `EMAIL#${email.toLowerCase()}`,
-            GSI1SK: `USER#${sub}`,
             email: email.toLowerCase(),
             status: 'active',
             version: 1,
@@ -225,7 +223,7 @@ export const handler = async (event: PostConfirmationTriggerEvent) => {
             GSI1SK: `USER#${sub}`,
             email: email.toLowerCase(),
             isPrimary: true,
-            isVerified: true,  // Cognito already verified
+            isVerified: true,
             verifiedAt: new Date().toISOString(),
             createdAt: new Date().toISOString(),
           }
@@ -234,9 +232,115 @@ export const handler = async (event: PostConfirmationTriggerEvent) => {
     ]
   });
   
-  return event;  // Must return event for Cognito
+  return event;
 };
 ```
+
+### Trigger Failure Recovery
+
+<Warning>
+Cognito triggers are synchronous. If the trigger fails, the user registration **succeeds in Cognito but fails in DynamoDB**, creating an orphaned Cognito user.
+</Warning>
+
+**Multi-layer failure handling:**
+
+```typescript
+export const handler = async (event: PostConfirmationTriggerEvent) => {
+  const { sub, email } = event.request.userAttributes;
+  const maxRetries = 3;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await createUserRecord(sub, email);
+      logger.info('User record created', { sub, attempt });
+      return event;
+    } catch (error) {
+      logger.warn('User creation failed', { sub, attempt, error: error.message });
+      
+      if (attempt < maxRetries) {
+        await sleep(100 * Math.pow(2, attempt)); // Exponential backoff
+        continue;
+      }
+      
+      // Final attempt failed - queue for async retry
+      await sqs.sendMessage({
+        QueueUrl: FAILED_USER_CREATION_QUEUE,
+        MessageBody: JSON.stringify({
+          type: 'CREATE_USER_RECORD',
+          payload: { sub, email },
+          originalError: error.message,
+          timestamp: new Date().toISOString()
+        })
+      });
+      
+      logger.error('User creation queued for retry', { sub });
+    }
+  }
+  
+  return event; // Must return event even on failure
+};
+```
+
+**DLQ Processor:**
+
+```typescript
+// src/triggers/processFailedUserCreation.ts
+export const handler = async (event: SQSEvent) => {
+  for (const record of event.Records) {
+    const { sub, email } = JSON.parse(record.body).payload;
+    
+    try {
+      // Check if user already exists (idempotency)
+      const existing = await getUser(sub);
+      if (existing) {
+        logger.info('User already exists, skipping', { sub });
+        continue;
+      }
+      
+      await createUserRecord(sub, email);
+      logger.info('User record created from DLQ', { sub });
+    } catch (error) {
+      logger.error('DLQ processing failed', { sub, error: error.message });
+      throw error; // Return to queue for retry
+    }
+  }
+};
+```
+
+**Orphan Detection Job (Scheduled):**
+
+For edge cases where both trigger and DLQ fail, run a periodic reconciliation:
+
+```typescript
+// src/scheduled/reconcileOrphanedUsers.ts
+// Runs daily via EventBridge Scheduler
+
+export const handler = async () => {
+  // List Cognito users created in last 24 hours
+  const cognitoUsers = await listRecentCognitoUsers(24);
+  
+  for (const cognitoUser of cognitoUsers) {
+    const dynamoUser = await getUser(cognitoUser.sub);
+    
+    if (!dynamoUser) {
+      logger.warn('Orphaned Cognito user detected', { 
+        sub: cognitoUser.sub,
+        email: cognitoUser.email 
+      });
+      
+      // Option 1: Auto-create
+      await createUserRecord(cognitoUser.sub, cognitoUser.email);
+      
+      // Option 2: Alert for manual review
+      // await publishAlert('ORPHANED_USER', { sub: cognitoUser.sub });
+    }
+  }
+};
+```
+
+<Note>
+The reconciliation job is a safety net. In practice, the trigger + DLQ should handle 99.9%+ of cases. Monitor the reconciliation job's match rate - frequent orphans indicate a systemic issue.
+</Note>
 
 ### Pre-Token Generation Trigger (Optional)
 

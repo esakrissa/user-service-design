@@ -75,9 +75,13 @@ A user can have multiple email addresses. Exactly one must be marked as primary.
 
 | PK | SK | GSI1PK | GSI1SK | Attributes |
 |---|---|---|---|---|
-| USER#abc-123 | PROFILE | EMAIL#john@example.com | USER#abc-123 | firstName, lastName, status, etc. |
+| USER#abc-123 | PROFILE | - | - | firstName, lastName, status, email (denormalized), etc. |
 | USER#abc-123 | EMAIL#email-001 | EMAIL#john@example.com | USER#abc-123 | isPrimary: true, isVerified: true |
 | USER#abc-123 | EMAIL#email-002 | EMAIL#john.work@co.com | USER#abc-123 | isPrimary: false, isVerified: true |
+
+<Note>
+The PROFILE record does **not** have GSI1PK/GSI1SK. Only EMAIL records are indexed in GSI1. This prevents duplicate results when querying by email address and ensures clean email uniqueness checks.
+</Note>
 
 ## Access Patterns
 
@@ -119,11 +123,10 @@ Emails are normalized before storage and lookup:
 
 1. Convert to lowercase
 2. Trim whitespace
-3. For Gmail: remove dots and plus-addressing (`john.doe+spam@gmail.com` → `johndoe@gmail.com`)
 
-<Note>
-Gmail normalization is optional and depends on business requirements. Some services intentionally allow plus-addressing for filtering.
-</Note>
+<Warning>
+**Gmail-specific normalization (removing dots and plus-addressing) is intentionally omitted.** This is a business decision that should be discussed with stakeholders. Some users rely on plus-addressing for inbox filtering, and removing it could break their workflows. If abuse becomes an issue, implement it as a configurable option per organization.
+</Warning>
 
 ## Data Integrity Constraints
 

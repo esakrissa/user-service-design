@@ -155,9 +155,89 @@ Lambda functions organized by domain:
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| Runtime | Node.js 20.x | TypeScript support, cold start performance |
+| Runtime | Node.js 20.x (LTS) | TypeScript support, fast cold starts, AWS SDK v3 native |
 | Framework | Serverless Framework | Mature, well-documented, Cognito integration |
 | Database | DynamoDB | Serverless, single-digit ms latency, scales infinitely |
 | Auth | Cognito | Managed auth, JWT tokens, OAuth 2.0 flows |
 | Events | EventBridge | Serverless event bus, schema registry, filtering |
-| IaC | Terraform | Cognito/DynamoDB resources, state management |
+| IaC | Terraform + Serverless | Split responsibilities (see below) |
+
+## Design Decisions
+
+Key architectural choices and the reasoning behind them.
+
+<AccordionGroup>
+  <Accordion title="Why Serverless Framework over SAM or CDK?">
+    **Options considered:** AWS SAM, AWS CDK, Serverless Framework, Terraform-only
+    
+    **Chosen:** Serverless Framework
+    
+    **Rationale:**
+    - More mature plugin ecosystem (offline, webpack, etc.)
+    - Simpler YAML syntax compared to CDK's programmatic approach
+    - Better local development experience than SAM
+    - Team familiarity reduces onboarding time
+    
+    **Trade-off:** Less flexibility than CDK for complex infrastructure patterns
+  </Accordion>
+  
+  <Accordion title="Why EventBridge over SNS+SQS?">
+    **Options considered:** SNS+SQS fan-out, EventBridge, direct Lambda invocation
+    
+    **Chosen:** EventBridge
+    
+    **Rationale:**
+    - Native content-based filtering (no need to filter in Lambda)
+    - Schema Registry for event documentation
+    - Archive and replay for debugging/recovery
+    - Single event bus vs. managing multiple SNS topics
+    
+    **Trade-off:** Slightly higher latency than direct SNS (~50-100ms), higher cost per event ($1/million vs. SNS's $0.50/million)
+  </Accordion>
+  
+  <Accordion title="Why split Terraform and Serverless Framework?">
+    **Options considered:** All Terraform, all Serverless, split approach
+    
+    **Chosen:** Split - Terraform for shared resources, Serverless for Lambda lifecycle
+    
+    **Rationale:**
+    - Cognito and DynamoDB are long-lived; Lambda functions change frequently
+    - Terraform state management better suited for infrastructure
+    - Serverless Framework optimized for Lambda deployment patterns
+    - Clear separation: Terraform outputs → SSM Parameters → Serverless reads
+    
+    **Integration pattern:**
+    ```
+    Terraform → SSM Parameter Store → Serverless Framework
+    (Cognito ARN)   (/user-service/prod/cognito-pool-id)   (${ssm:...})
+    ```
+  </Accordion>
+  
+  <Accordion title="Why DynamoDB single-table over multi-table?">
+    **Options considered:** Separate User and Email tables, single table with entities
+    
+    **Chosen:** Single-table design
+    
+    **Rationale:**
+    - Atomic transactions for primary email changes (TransactWriteItems requires same table)
+    - Single query to fetch user + all emails
+    - One table to monitor, backup, and scale
+    - Cost efficiency (one set of on-demand capacity)
+    
+    **Trade-off:** More complex access patterns, requires upfront design, harder to evolve
+  </Accordion>
+  
+  <Accordion title="Why Cognito sub as userId?">
+    **Options considered:** Cognito `sub` directly, custom UUID with mapping table
+    
+    **Chosen:** Use Cognito `sub` directly
+    
+    **Rationale:**
+    - No mapping table to maintain
+    - Guaranteed unique across pool
+    - Available in every JWT token
+    - Simpler implementation
+    
+    **Trade-off:** Harder to migrate away from Cognito (would need to remap all user IDs)
+  </Accordion>
+</AccordionGroup>

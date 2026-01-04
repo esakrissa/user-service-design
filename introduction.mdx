@@ -60,3 +60,42 @@ This document presents the architecture design for a **User Service** built on t
 | [Inter-Service](/inter-service) | EventBridge events, consumers, failure handling |
 | [DevOps](/devops) | CI/CD, monitoring, scaling, infrastructure as code |
 | [Hard Parts](/hard-parts) | Technical challenges and their solutions |
+
+---
+
+## Day 1 Scope
+
+This design is time-boxed to **a single day of implementation**. Below is what would be delivered versus what's deferred.
+
+<CardGroup cols={2}>
+  <Card title="Day 1 Deliverables" icon="check">
+    - User CRUD endpoints (`/users/me`)
+    - Single primary email per user
+    - Cognito integration with post-confirmation trigger
+    - Basic EventBridge publishing (`user.created`, `user.deleted`)
+    - Terraform: Cognito User Pool, DynamoDB table, EventBridge bus
+    - Serverless Framework: Lambda handlers, API Gateway with authorizer
+    - Manual deployment to staging
+  </Card>
+  <Card title="Deferred to Future Iterations" icon="clock">
+    - Multiple emails per user with verification flow
+    - Transactional outbox pattern (accept at-least-once initially)
+    - Full CI/CD pipeline with integration tests
+    - Comprehensive CloudWatch dashboard
+    - Provisioned concurrency optimization
+    - Admin endpoints (`GET /users/{userId}`)
+  </Card>
+</CardGroup>
+
+### Trade-off Rationale
+
+| Decision | Day 1 Approach | Full Implementation | Why Defer? |
+|----------|---------------|---------------------|------------|
+| Multi-email | Single email only | Full CRUD with verification | Reduces transaction complexity |
+| Event delivery | Direct publish (may lose events) | Outbox pattern | Acceptable for MVP; add if reliability issues arise |
+| CI/CD | Manual `serverless deploy` | GitHub Actions with staging/prod | Pipeline setup takes 2-3 hours |
+| Monitoring | CloudWatch Logs + basic alarms | Full dashboard + X-Ray | Can add incrementally |
+
+<Tip>
+The goal is a **working, deployable service** by end of day. Complexity is added only when it solves a real problem, not preemptively.
+</Tip>

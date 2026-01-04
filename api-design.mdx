@@ -349,6 +349,142 @@ Set an email as the user's primary email address.
 
 ---
 
+## Rate Limiting Implementation
+
+Rate limiting in a serverless context requires stateful tracking. Here's how to implement it.
+
+### Strategy: DynamoDB Token Bucket
+
+DynamoDB is used to track request counts per user/email with TTL for automatic cleanup.
+
+**Rate Limit Table Schema:**
+
+| PK | SK | count | ttl |
+|---|---|---|---|
+| RATELIMIT#verify#{email} | HOUR#{hourBucket} | 2 | 1705845600 |
+| RATELIMIT#confirm#{emailId} | ATTEMPTS | 3 | 1705845600 |
+
+**Implementation:**
+
+```typescript
+interface RateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  resetAt: number;
+}
+
+async function checkRateLimit(
+  key: string,
+  limit: number,
+  windowSeconds: number
+): Promise<RateLimitResult> {
+  const now = Math.floor(Date.now() / 1000);
+  const windowStart = now - (now % windowSeconds);
+  const ttl = windowStart + windowSeconds + 60; // Extra 60s buffer
+  
+  try {
+    const result = await dynamodb.update({
+      TableName: RATE_LIMIT_TABLE,
+      Key: {
+        PK: `RATELIMIT#${key}`,
+        SK: `WINDOW#${windowStart}`
+      },
+      UpdateExpression: 'SET #count = if_not_exists(#count, :zero) + :inc, #ttl = :ttl',
+      ConditionExpression: 'attribute_not_exists(#count) OR #count < :limit',
+      ExpressionAttributeNames: {
+        '#count': 'count',
+        '#ttl': 'ttl'
+      },
+      ExpressionAttributeValues: {
+        ':zero': 0,
+        ':inc': 1,
+        ':limit': limit,
+        ':ttl': ttl
+      },
+      ReturnValues: 'ALL_NEW'
+    });
+    
+    return {
+      allowed: true,
+      remaining: limit - (result.Attributes?.count || 1),
+      resetAt: windowStart + windowSeconds
+    };
+  } catch (error) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      return {
+        allowed: false,
+        remaining: 0,
+        resetAt: windowStart + windowSeconds
+      };
+    }
+    throw error;
+  }
+}
+```
+
+**Usage in handler:**
+
+```typescript
+const verifyEmailHandler = async (event: APIGatewayEvent) => {
+  const { emailId } = event.pathParameters;
+  const email = await getEmail(emailId);
+  
+  const rateLimit = await checkRateLimit(
+    `verify#${email.email}`,
+    3,      // 3 requests
+    3600    // per hour
+  );
+  
+  if (!rateLimit.allowed) {
+    return {
+      statusCode: 429,
+      headers: {
+        'Retry-After': String(rateLimit.resetAt - Math.floor(Date.now() / 1000))
+      },
+      body: JSON.stringify({
+        error: 'Too Many Requests',
+        message: 'Verification limit reached',
+        retryAfter: rateLimit.resetAt
+      })
+    };
+  }
+  
+  // Proceed with verification...
+};
+```
+
+### Alternative: API Gateway Usage Plans
+
+For API-wide rate limiting (not user-specific):
+
+```yaml
+# serverless.yml
+resources:
+  Resources:
+    UsagePlan:
+      Type: AWS::ApiGateway::UsagePlan
+      Properties:
+        UsagePlanName: UserServicePlan
+        Throttle:
+          RateLimit: 100      # requests per second
+          BurstLimit: 200     # burst capacity
+        Quota:
+          Limit: 10000        # requests per day
+          Period: DAY
+```
+
+### Rate Limit Headers
+
+All rate-limited endpoints return standard headers:
+
+```
+X-RateLimit-Limit: 3
+X-RateLimit-Remaining: 1
+X-RateLimit-Reset: 1705849200
+```
+
+---
+
 ### Concurrent Update Conflict
 
 **Scenario:** Two requests update the same user simultaneously.

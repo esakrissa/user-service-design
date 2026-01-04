@@ -270,6 +270,10 @@ resources:
 
 ### GitHub Actions Workflow
 
+<Note>
+This workflow uses **OIDC federation** instead of long-lived AWS access keys. OIDC is the recommended approach for GitHub Actions as it eliminates the need to store AWS credentials as secrets and provides short-lived, automatically rotated credentials.
+</Note>
+
 ```yaml
 name: Deploy User Service
 
@@ -278,6 +282,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
 
 jobs:
   test:
@@ -308,13 +316,16 @@ jobs:
           node-version: '20'
           cache: 'npm'
       
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: us-east-1
+      
       - run: npm ci
       
       - name: Deploy to Staging
         run: npx serverless deploy --stage staging
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
   integration-test:
     needs: deploy-staging
@@ -342,13 +353,52 @@ jobs:
           node-version: '20'
           cache: 'npm'
       
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: us-east-1
+      
       - run: npm ci
       
       - name: Deploy to Production
         run: npx serverless deploy --stage prod
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+```
+
+### OIDC IAM Role Setup
+
+The GitHub Actions OIDC provider must be configured in AWS:
+
+```hcl
+# terraform/github-oidc.tf
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+}
+
+resource "aws_iam_role" "github_actions" {
+  name = "github-actions-deploy"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:esakrissa/user-service:*"
+        }
+      }
+    }]
+  })
+}
 ```
 
 ### Pipeline Stages
@@ -477,3 +527,260 @@ Start with on-demand. After collecting 2-4 weeks of metrics, evaluate if provisi
 - Email addresses are naturally distributed
 - Monitor `ConsumedReadCapacityUnits` by partition key
 - If issues arise, consider write sharding for high-volume patterns
+
+---
+
+## Cost Analysis
+
+Understanding costs at different scales helps with capacity planning and budget forecasting.
+
+### Cost Breakdown by Scale
+
+| Component | 10K MAU | 100K MAU | 1M MAU |
+|-----------|---------|----------|--------|
+| **Lambda** | ~$2/mo | ~$15/mo | ~$120/mo |
+| **API Gateway** | ~$4/mo | ~$35/mo | ~$350/mo |
+| **DynamoDB (on-demand)** | ~$3/mo | ~$25/mo | ~$200/mo |
+| **Cognito** | Free (first 50K) | ~$275/mo | ~$2,750/mo |
+| **EventBridge** | ~$0.10/mo | ~$1/mo | ~$10/mo |
+| **CloudWatch Logs** | ~$2/mo | ~$15/mo | ~$100/mo |
+| **Total** | **~$11/mo** | **~$366/mo** | **~$3,530/mo** |
+
+<Note>
+MAU = Monthly Active Users. Assumes average 10 API calls per user per month, 1KB average payload. Cognito is the largest cost driver at scale due to per-MAU pricing ($0.0055/MAU after 50K free tier).
+</Note>
+
+### Cost Assumptions
+
+| Metric | Value |
+|--------|-------|
+| Average Lambda duration | 100ms |
+| Lambda memory | 256MB |
+| DynamoDB item size | 500 bytes average |
+| API calls per user/month | 10 |
+| Events published per user/month | 2 |
+
+### Cost Optimization Strategies
+
+<AccordionGroup>
+  <Accordion title="DynamoDB: On-Demand vs Provisioned">
+    Switch to provisioned capacity with auto-scaling when traffic is predictable. Can reduce costs by 50-70% at steady state.
+    
+    **Break-even:** ~25% capacity utilization. If you're consistently above this, provisioned is cheaper.
+  </Accordion>
+  
+  <Accordion title="Cognito Alternatives">
+    At 1M+ users, consider self-managed auth (e.g., Auth0, or custom JWT issuance). Cognito's per-MAU pricing becomes expensive.
+    
+    **Trade-off:** Operational complexity vs. cost savings
+  </Accordion>
+  
+  <Accordion title="Lambda: Reduce Cold Starts">
+    Use Graviton2 (ARM) processors for 20% cost reduction. Smaller bundles reduce cold start time and execution cost.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Testing Strategy
+
+A comprehensive testing approach ensures reliability without slowing down development.
+
+### Testing Pyramid
+
+```
+         /\
+        /  \     E2E Tests (few, slow, expensive)
+       /----\
+      /      \   Integration Tests (some, medium)
+     /--------\
+    /          \ Unit Tests (many, fast, cheap)
+   --------------
+```
+
+### Unit Tests
+
+**Tools:** Jest, ts-jest
+
+**What to test:**
+- Business logic in isolation (validation, transformations)
+- DynamoDB marshalling/unmarshalling
+- Error handling paths
+
+```typescript
+// Example: Email validation
+describe('normalizeEmail', () => {
+  it('lowercases email', () => {
+    expect(normalizeEmail('John@Example.COM')).toBe('john@example.com');
+  });
+  
+  it('trims whitespace', () => {
+    expect(normalizeEmail('  john@example.com  ')).toBe('john@example.com');
+  });
+});
+```
+
+### Integration Tests
+
+**Tools:** Jest, DynamoDB Local, LocalStack
+
+**What to test:**
+- Lambda handlers with real DynamoDB operations
+- Cognito trigger flows
+- EventBridge event publishing
+
+```typescript
+// Example: Handler integration test
+describe('getMe handler', () => {
+  beforeAll(async () => {
+    await createTestTable();
+    await seedTestUser();
+  });
+  
+  it('returns user profile for valid JWT', async () => {
+    const event = mockApiGatewayEvent({
+      path: '/users/me',
+      claims: { sub: 'test-user-id' }
+    });
+    
+    const response = await handler(event);
+    
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).userId).toBe('test-user-id');
+  });
+});
+```
+
+### Contract Tests
+
+**Tools:** Pact, EventBridge Schema Registry
+
+**What to test:**
+- Event schemas match consumer expectations
+- API response shapes are stable
+
+### E2E Tests
+
+**Tools:** Cypress, Playwright (for full-stack), or custom scripts
+
+**What to test:**
+- Full user registration flow
+- Critical paths (login → action → logout)
+
+<Warning>
+E2E tests are expensive to maintain. Keep them minimal and focused on critical business flows. Most coverage should come from unit and integration tests.
+</Warning>
+
+### Test Commands
+
+```bash
+npm run test          # Unit tests (fast, run on every commit)
+npm run test:int      # Integration tests (requires DynamoDB Local)
+npm run test:e2e      # E2E tests (run against staging)
+npm run test:all      # Full suite
+```
+
+---
+
+## Observability Correlation
+
+Tracing requests across API Gateway, Lambda, DynamoDB, and EventBridge requires consistent correlation IDs.
+
+### Request ID Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant APIGW as API Gateway
+    participant Lambda
+    participant DynamoDB
+    participant EventBridge
+    participant Consumer
+
+    Client->>APIGW: Request (X-Request-ID optional)
+    Note over APIGW: requestId = context.requestId
+    APIGW->>Lambda: Invoke + requestId in context
+    Lambda->>DynamoDB: Query (requestId in logs)
+    Lambda->>EventBridge: PutEvents (correlationId in detail.metadata)
+    EventBridge->>Consumer: Event with correlationId
+    Consumer->>Consumer: Log with correlationId
+```
+
+### Implementation
+
+**Lambda middleware for correlation:**
+
+```typescript
+interface RequestContext {
+  requestId: string;
+  userId?: string;
+}
+
+const withCorrelation = (handler: Handler) => async (event: APIGatewayEvent) => {
+  const requestId = event.requestContext.requestId;
+  const userId = event.requestContext.authorizer?.claims?.sub;
+  
+  // Attach to all logs
+  logger.setContext({ requestId, userId });
+  
+  try {
+    return await handler(event, { requestId, userId });
+  } finally {
+    logger.clearContext();
+  }
+};
+```
+
+**EventBridge event with correlation:**
+
+```typescript
+await eventbridge.putEvents({
+  Entries: [{
+    Source: 'user-service',
+    DetailType: 'user.updated',
+    Detail: JSON.stringify({
+      userId,
+      changedFields,
+      metadata: {
+        correlationId: context.requestId,  // Links back to API request
+        timestamp: new Date().toISOString(),
+        environment: process.env.STAGE
+      }
+    })
+  }]
+});
+```
+
+**CloudWatch Logs Insights query:**
+
+```sql
+fields @timestamp, @message
+| filter metadata.correlationId = 'abc-123-request-id'
+| sort @timestamp asc
+```
+
+### Structured Logging
+
+All logs use JSON format for queryability:
+
+```typescript
+logger.info('User updated', {
+  requestId: context.requestId,
+  userId,
+  changedFields: ['firstName', 'lastName'],
+  duration: 45
+});
+```
+
+Output:
+```json
+{
+  "level": "info",
+  "message": "User updated",
+  "requestId": "abc-123",
+  "userId": "user-456",
+  "changedFields": ["firstName", "lastName"],
+  "duration": 45,
+  "timestamp": "2024-01-21T10:30:00.000Z"
+}
+```

@@ -2,42 +2,54 @@
 
 Design document for a high-scale, Cognito-authenticated User service on AWS Serverless Framework.
 
+**Time-boxed to a single day of implementation** - demonstrating pragmatic trade-offs between completeness and delivery.
+
 ## Live Documentation
 
 **[https://docs.esakrissa.com](https://docs.esakrissa.com)**
 
-## Overview
+## Highlights
 
-This document covers the architecture design for a User Service that handles CRUD operations on User and Email entities. Key aspects include:
+This design document demonstrates:
 
-- **DynamoDB single-table design** with GSI for email lookups
-- **AWS Cognito authentication** with JWT token flow
-- **EventBridge** for inter-service communication
-- **Edge case handling** for email uniqueness, primary email invariant, and concurrency
-- **DevOps considerations** including Terraform, Serverless Framework, CI/CD, and monitoring
+- **Pragmatic scoping** - Day 1 deliverables vs. future iterations clearly defined
+- **Design decisions with rationale** - Why Serverless Framework over SAM/CDK, why EventBridge over SNS+SQS
+- **Edge case handling** - Email uniqueness, primary email invariant, concurrent updates
+- **Failure mode analysis** - What breaks, how we detect it, how we recover
+- **Cost awareness** - Estimates at 10K, 100K, and 1M MAU scales
+- **Security best practices** - OIDC for CI/CD, no long-lived credentials
 
 ## Document Structure
 
-| Section | Description |
-|---------|-------------|
-| Introduction | Overview and design principles |
-| Architecture | System components and request flow |
-| Data Model | DynamoDB schema and access patterns |
-| Authentication | Cognito integration and token handling |
-| API Design | Endpoints and edge cases |
-| Inter-Service | EventBridge events and consumers |
-| DevOps | IaC, CI/CD, monitoring, scaling |
-| Hard Parts | Technical challenges and solutions |
+| Section | Key Topics |
+|---------|------------|
+| Introduction | Overview, design principles, **Day 1 scope** |
+| Architecture | System components, request flow, **design decisions** |
+| Data Model | DynamoDB single-table, GSI design, access patterns |
+| Authentication | Cognito integration, **trigger failure recovery**, token revocation |
+| API Design | Endpoints, edge cases, **rate limiting implementation** |
+| Inter-Service | EventBridge events, ordering, guaranteed delivery |
+| DevOps | IaC, CI/CD with **OIDC**, **cost analysis**, **testing strategy** |
+| Hard Parts | Challenges, solutions, **failure mode analysis** |
 
 ## Tech Stack
 
-- **Runtime:** Node.js 20.x with TypeScript
-- **Framework:** Serverless Framework
-- **Database:** DynamoDB (single-table design)
-- **Auth:** AWS Cognito
-- **Events:** Amazon EventBridge
-- **IaC:** Terraform + Serverless Framework
-- **CI/CD:** GitHub Actions
+| Component | Technology |
+|-----------|------------|
+| Runtime | Node.js 20.x LTS with TypeScript |
+| Framework | Serverless Framework |
+| Database | DynamoDB (single-table design) |
+| Auth | AWS Cognito |
+| Events | Amazon EventBridge |
+| IaC | Terraform (shared resources) + Serverless (Lambda lifecycle) |
+| CI/CD | GitHub Actions with OIDC federation |
+
+## Quick Links
+
+- [Day 1 Scope](https://docs.esakrissa.com/introduction#day-1-scope)
+- [Design Decisions](https://docs.esakrissa.com/architecture#design-decisions)
+- [Failure Mode Analysis](https://docs.esakrissa.com/hard-parts#failure-mode-analysis)
+- [Cost Analysis](https://docs.esakrissa.com/devops#cost-analysis)
 
 ## Author
 

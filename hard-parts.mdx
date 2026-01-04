@@ -462,6 +462,83 @@ The outbox pattern adds complexity. Only use when event delivery is business-cri
 
 ---
 
+## Failure Mode Analysis
+
+A comprehensive view of what can go wrong, how we detect it, and how we recover.
+
+| Failure | Detection | Impact | Recovery | RTO |
+|---------|-----------|--------|----------|-----|
+| **Cognito trigger fails** | CloudWatch Lambda errors, orphan reconciliation job | User in Cognito but not DynamoDB | DLQ retry + daily reconciliation | Minutes to 24h |
+| **DynamoDB throttling** | ConsumedCapacity metrics, 5xx errors | API requests fail | Auto-scaling (if provisioned) or on-demand absorbs | Seconds |
+| **DynamoDB unavailable** | API errors, health checks | Full service outage | Wait for AWS recovery, no manual action | AWS SLA |
+| **EventBridge delivery fails** | DLQ depth > 0 | Downstream services stale | Manual/automatic DLQ replay | Minutes |
+| **Lambda cold start spike** | Duration p99 increase | Latency spike for users | Provisioned concurrency or wait | Seconds |
+| **Cognito unavailable** | Auth failures, 503 errors | No new logins, existing tokens work | Wait for AWS recovery | AWS SLA |
+| **Concurrent update conflict** | 409 responses, ConditionalCheckFailed | User must retry | Client refresh + retry | Immediate |
+| **Email uniqueness race** | ConditionalCheckFailed logs | Duplicate prevented, user sees error | User retries with different email | Immediate |
+| **Rate limit exceeded** | 429 responses | User temporarily blocked | Wait for window reset | Minutes |
+| **Invalid JWT** | 401 responses | Request rejected | Client re-authenticates | Immediate |
+
+### Blast Radius Analysis
+
+```mermaid
+graph TD
+    subgraph "Cognito Failure"
+        COG[Cognito Down] --> AUTH[No new auth]
+        AUTH --> NEWU[New users blocked]
+        AUTH --> REFRESH[Token refresh fails]
+        COG -.->|Existing tokens| API[API still works]
+    end
+    
+    subgraph "DynamoDB Failure"
+        DDB[DynamoDB Down] --> CRUD[All CRUD fails]
+        CRUD --> TRIGGER[Cognito triggers fail]
+        CRUD --> EVENTS[No events published]
+    end
+    
+    subgraph "EventBridge Failure"
+        EB[EventBridge Down] --> ASYNC[Async operations fail]
+        ASYNC --> DLQ[Events queue in DLQ]
+        EB -.->|Sync operations| SYNC[Still work]
+    end
+```
+
+### Recovery Runbooks
+
+<AccordionGroup>
+  <Accordion title="High DLQ Depth">
+    **Symptoms:** CloudWatch alarm for DLQ depth > 0
+    
+    **Steps:**
+    1. Check DLQ messages for error patterns
+    2. If transient (network, throttle): Redrive messages to source queue
+    3. If persistent (code bug): Fix code, deploy, then redrive
+    4. Monitor for successful processing
+  </Accordion>
+  
+  <Accordion title="Orphaned Cognito Users">
+    **Symptoms:** Users report they registered but can't access the app
+    
+    **Steps:**
+    1. Check CloudWatch for post-confirmation trigger errors
+    2. Query DynamoDB for user by Cognito sub
+    3. If missing: Manually create DynamoDB record or trigger reconciliation job
+    4. Investigate root cause (DynamoDB throttling, code bug)
+  </Accordion>
+  
+  <Accordion title="Mass Token Revocation Needed">
+    **Symptoms:** Security incident requiring immediate logout of all users
+    
+    **Steps:**
+    1. Cognito: `AdminUserGlobalSignOut` for affected users (invalidates refresh tokens)
+    2. Access tokens remain valid until expiry (1 hour)
+    3. For immediate block: Deploy Lambda change to check user status on every request
+    4. Consider reducing access token TTL for future incidents
+  </Accordion>
+</AccordionGroup>
+
+---
+
 ## What Makes This "Good"
 
 <CardGroup cols={2}>
