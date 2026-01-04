@@ -4,7 +4,7 @@ Design document for a high-scale, Cognito-authenticated User service on AWS Serv
 
 ## Live Documentation
 
-**[https://docs.esakrissa.dev](https://docs.esakrissa.dev)**
+**[https://docs.esakrissa.com](https://docs.esakrissa.com)**
 
 ## Overview
 
