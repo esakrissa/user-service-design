@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50" fill="none">
+  <rect width="50" height="50" rx="10" fill="#38BDF8"/>
+  <path d="M15 35V15L25 25L35 15V35" stroke="#0F172A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="60" y="33" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#F8FAFC">User Service</text>
+</svg>

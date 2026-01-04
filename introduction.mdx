@@ -1,0 +1,62 @@
+---
+title: 'Introduction'
+description: 'Architecture design for a high-scale, Cognito-authenticated User Service'
+---
+
+## Overview
+
+This document presents the architecture design for a **User Service** built on the AWS Serverless Framework. The service handles CRUD operations on related **User** and **Email** entities, using **DynamoDB** with a single-table design pattern and **AWS Cognito** for authentication.
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    System components and how they interact
+  </Card>
+  <Card title="Data Model" icon="database" href="/data-model">
+    DynamoDB single-table design and access patterns
+  </Card>
+  <Card title="Authentication" icon="lock" href="/authentication">
+    Cognito integration and JWT token flow
+  </Card>
+  <Card title="API Design" icon="code" href="/api-design">
+    Endpoints, validation, and edge cases
+  </Card>
+</CardGroup>
+
+## Key Requirements
+
+| Requirement | Solution |
+|-------------|----------|
+| Authentication | AWS Cognito with JWT tokens |
+| Data Storage | DynamoDB single-table design |
+| API Layer | API Gateway + Lambda |
+| Inter-Service | EventBridge pub/sub |
+| Infrastructure | Serverless Framework + Terraform |
+
+## Design Principles
+
+<AccordionGroup>
+  <Accordion title="Type Safety First">
+    Every function, handler, and data model is strongly typed. No `any` types. Generics for reusable patterns. Type inference for cleaner consumer code.
+  </Accordion>
+  <Accordion title="Single-Table DynamoDB">
+    User and Email entities in one table. Designed for access patterns, not normalized relations. Atomic transactions where needed.
+  </Accordion>
+  <Accordion title="Event-Driven Communication">
+    Loose coupling via EventBridge. Services react to events, not direct calls. Dead Letter Queues for failure handling.
+  </Accordion>
+  <Accordion title="Defense in Depth">
+    JWT validation at API Gateway. User ID from token claims only. Rate limiting on sensitive operations.
+  </Accordion>
+</AccordionGroup>
+
+## Document Structure
+
+| Section | What You'll Learn |
+|---------|-------------------|
+| [Architecture](/architecture) | High-level system design and component interactions |
+| [Data Model](/data-model) | DynamoDB table schema, GSIs, and access patterns |
+| [Authentication](/authentication) | Cognito setup, token flow, and authorization |
+| [API Design](/api-design) | Endpoints, request/response schemas, edge cases |
+| [Inter-Service](/inter-service) | EventBridge events, consumers, failure handling |
+| [DevOps](/devops) | CI/CD, monitoring, scaling, infrastructure as code |
+| [Hard Parts](/hard-parts) | Technical challenges and their solutions |

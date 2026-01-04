@@ -1,0 +1,479 @@
+---
+title: 'DevOps'
+description: 'Infrastructure as Code, CI/CD, monitoring, and scaling'
+---
+
+## Infrastructure Overview
+
+The User Service infrastructure is managed through a combination of **Serverless Framework** (for Lambda and API Gateway) and **Terraform** (for shared resources like Cognito and DynamoDB).
+
+```mermaid
+graph TB
+    subgraph "IaC"
+        TF[Terraform]
+        SLS[Serverless Framework]
+    end
+    
+    subgraph "Managed by Terraform"
+        COG[Cognito User Pool]
+        DDB[DynamoDB Table]
+        EB[EventBridge Bus]
+        DLQ[SQS DLQ]
+    end
+    
+    subgraph "Managed by Serverless"
+        APIGW[API Gateway]
+        LAM[Lambda Functions]
+        IAM[IAM Roles]
+    end
+    
+    TF --> COG
+    TF --> DDB
+    TF --> EB
+    TF --> DLQ
+    SLS --> APIGW
+    SLS --> LAM
+    SLS --> IAM
+    LAM -.->|References| COG
+    LAM -.->|References| DDB
+    LAM -.->|References| EB
+```
+
+## Terraform Resources
+
+### Cognito User Pool
+
+```hcl
+resource "aws_cognito_user_pool" "main" {
+  name = "${var.environment}-user-pool"
+
+  username_attributes      = ["email"]
+  auto_verified_attributes = ["email"]
+
+  password_policy {
+    minimum_length    = 12
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
+
+  schema {
+    name                = "email"
+    attribute_data_type = "String"
+    required            = true
+    mutable             = true
+  }
+
+  lambda_config {
+    post_confirmation = aws_lambda_function.post_confirmation.arn
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_cognito_user_pool_client" "main" {
+  name         = "${var.environment}-user-pool-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  generate_secret = false
+
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH"
+  ]
+
+  access_token_validity  = 1   # hours
+  id_token_validity      = 1   # hours
+  refresh_token_validity = 30  # days
+}
+```
+
+### DynamoDB Table
+
+```hcl
+resource "aws_dynamodb_table" "user_service" {
+  name         = "${var.environment}-user-service"
+  billing_mode = "PAY_PER_REQUEST"  # On-demand
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    hash_key        = "GSI1PK"
+    range_key       = "GSI1SK"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.common_tags
+}
+```
+
+### EventBridge
+
+```hcl
+resource "aws_cloudwatch_event_bus" "user_service" {
+  name = "${var.environment}-user-service"
+  tags = var.common_tags
+}
+
+resource "aws_sqs_queue" "dlq" {
+  name                      = "${var.environment}-user-service-dlq"
+  message_retention_seconds = 1209600  # 14 days
+  tags                      = var.common_tags
+}
+
+resource "aws_cloudwatch_event_rule" "user_events" {
+  name           = "${var.environment}-user-events"
+  event_bus_name = aws_cloudwatch_event_bus.user_service.name
+
+  event_pattern = jsonencode({
+    source      = ["user-service"]
+    detail-type = [{ prefix = "user." }]
+  })
+}
+```
+
+## Serverless Framework
+
+### serverless.yml
+
+```yaml
+service: user-service
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  
+  environment:
+    TABLE_NAME: ${self:custom.tableName}
+    EVENT_BUS_NAME: ${self:custom.eventBusName}
+    COGNITO_USER_POOL_ID: ${self:custom.cognitoUserPoolId}
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+          Resource:
+            - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${self:custom.tableName}
+            - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${self:custom.tableName}/index/*
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${self:custom.eventBusName}
+
+custom:
+  tableName: ${self:provider.stage}-user-service
+  eventBusName: ${self:provider.stage}-user-service
+  cognitoUserPoolId: ${ssm:/user-service/${self:provider.stage}/cognito-pool-id}
+
+functions:
+  getMe:
+    handler: src/handlers/user.getMe
+    events:
+      - http:
+          path: /users/me
+          method: get
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref CognitoAuthorizer
+
+  updateMe:
+    handler: src/handlers/user.updateMe
+    events:
+      - http:
+          path: /users/me
+          method: put
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref CognitoAuthorizer
+
+  deleteMe:
+    handler: src/handlers/user.deleteMe
+    events:
+      - http:
+          path: /users/me
+          method: delete
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref CognitoAuthorizer
+
+  listEmails:
+    handler: src/handlers/email.list
+    events:
+      - http:
+          path: /users/me/emails
+          method: get
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref CognitoAuthorizer
+
+  addEmail:
+    handler: src/handlers/email.add
+    events:
+      - http:
+          path: /users/me/emails
+          method: post
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref CognitoAuthorizer
+
+  # Additional handlers...
+
+resources:
+  Resources:
+    CognitoAuthorizer:
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: CognitoAuthorizer
+        Type: COGNITO_USER_POOLS
+        IdentitySource: method.request.header.Authorization
+        RestApiId: !Ref ApiGatewayRestApi
+        ProviderARNs:
+          - !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${self:custom.cognitoUserPoolId}
+```
+
+## CI/CD Pipeline
+
+### GitHub Actions Workflow
+
+```yaml
+name: Deploy User Service
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy-staging:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - run: npm ci
+      
+      - name: Deploy to Staging
+        run: npx serverless deploy --stage staging
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  integration-test:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run test:integration
+        env:
+          API_URL: ${{ secrets.STAGING_API_URL }}
+          TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+  deploy-production:
+    needs: integration-test
+    runs-on: ubuntu-latest
+    environment: 
+      name: production
+      url: https://api.example.com
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - run: npm ci
+      
+      - name: Deploy to Production
+        run: npx serverless deploy --stage prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+```
+
+### Pipeline Stages
+
+<Steps>
+  <Step title="PR Checks">
+    Lint, type-check, unit tests on every pull request
+  </Step>
+  <Step title="Deploy Staging">
+    Automatic deployment to staging on merge to main
+  </Step>
+  <Step title="Integration Tests">
+    Run integration tests against staging environment
+  </Step>
+  <Step title="Deploy Production">
+    Manual approval required, then deploy to production
+  </Step>
+</Steps>
+
+## Monitoring
+
+### CloudWatch Metrics
+
+| Metric | Source | Alarm Threshold |
+|--------|--------|-----------------|
+| Lambda Errors | Lambda | Error rate > 1% |
+| Lambda Duration | Lambda | p99 > 3 seconds |
+| API Gateway 5xx | API Gateway | > 10 per minute |
+| API Gateway 4xx | API Gateway | > 100 per minute (warning) |
+| DynamoDB Throttles | DynamoDB | Any throttle |
+| DynamoDB ConsumedRCU | DynamoDB | > 80% of limit |
+| DLQ Messages | SQS | Visible messages > 0 |
+
+### CloudWatch Dashboard
+
+```json
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "properties": {
+        "title": "Lambda Invocations & Errors",
+        "metrics": [
+          ["AWS/Lambda", "Invocations", "FunctionName", "user-service-prod-getMe"],
+          [".", "Errors", ".", "."]
+        ]
+      }
+    },
+    {
+      "type": "metric", 
+      "properties": {
+        "title": "API Gateway Latency",
+        "metrics": [
+          ["AWS/ApiGateway", "Latency", "ApiName", "prod-user-service", { "stat": "p50" }],
+          ["...", { "stat": "p99" }]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "properties": {
+        "title": "DynamoDB Consumed Capacity",
+        "metrics": [
+          ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "prod-user-service"],
+          [".", "ConsumedWriteCapacityUnits", ".", "."]
+        ]
+      }
+    }
+  ]
+}
+```
+
+### X-Ray Tracing
+
+Enable distributed tracing across services:
+
+```yaml
+# serverless.yml
+provider:
+  tracing:
+    lambda: true
+    apiGateway: true
+```
+
+X-Ray provides:
+- End-to-end request traces
+- Service map visualization
+- Latency breakdown by component
+- Error correlation across services
+
+## Scaling Considerations
+
+### Lambda Cold Starts
+
+| Strategy | When to Use |
+|----------|-------------|
+| **Provisioned Concurrency** | Latency-sensitive endpoints, consistent traffic |
+| **Keep functions small** | Always - faster cold starts |
+| **Warm-up pings** | Budget-conscious, occasional latency spikes acceptable |
+
+### DynamoDB Capacity
+
+| Mode | Traffic Pattern | Cost Model |
+|------|-----------------|------------|
+| **On-Demand** | Unpredictable, spiky | Pay per request |
+| **Provisioned** | Predictable, steady | Pay for capacity |
+| **Provisioned + Auto-scaling** | Predictable with occasional spikes | Pay for capacity, auto-adjusts |
+
+<Tip>
+Start with on-demand. After collecting 2-4 weeks of metrics, evaluate if provisioned capacity would be more cost-effective.
+</Tip>
+
+### API Gateway Throttling
+
+| Setting | Default | Recommended |
+|---------|---------|-------------|
+| Account-level rate | 10,000 RPS | Sufficient for most |
+| Per-method throttle | None | Set based on expected traffic |
+| Usage plans | None | Implement for B2B API access |
+
+### GSI Hot Partitions
+
+**Risk:** If many users have similar email domains, GSI partition key `EMAIL#{email}` could create hot partitions.
+
+**Mitigation:**
+- Email addresses are naturally distributed
+- Monitor `ConsumedReadCapacityUnits` by partition key
+- If issues arise, consider write sharding for high-volume patterns

@@ -1,0 +1,221 @@
+---
+title: 'Data Model'
+description: 'DynamoDB single-table design for User and Email entities'
+---
+
+## Why Single-Table Design?
+
+In DynamoDB, you design for **access patterns**, not normalized relations. Single-table design:
+
+- **Reduces costs** - One table, one set of capacity units
+- **Enables transactions** - TransactWriteItems across entities in same table
+- **Simplifies operations** - One table to monitor, backup, and manage
+- **Improves performance** - Related data often fetched in single query
+
+<Warning>
+Single-table design requires upfront access pattern analysis. Adding new access patterns later may require table restructuring or new GSIs.
+</Warning>
+
+## Entity Definitions
+
+### User Entity
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| userId | string (UUID) | Primary identifier, matches Cognito `sub` |
+| email | string | Primary email address (also in Cognito) |
+| firstName | string | User's first name |
+| lastName | string | User's last name |
+| phone | string (optional) | Phone number in E.164 format |
+| status | enum | `active` \| `suspended` \| `deleted` |
+| version | number | Optimistic locking counter |
+| createdAt | string (ISO8601) | Account creation timestamp |
+| updatedAt | string (ISO8601) | Last modification timestamp |
+
+### Email Entity
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| emailId | string (UUID) | Unique identifier for this email record |
+| userId | string (UUID) | Owner of this email |
+| email | string | The email address (normalized lowercase) |
+| isPrimary | boolean | Whether this is the user's primary email |
+| isVerified | boolean | Whether email ownership is confirmed |
+| verifiedAt | string (ISO8601) | Verification timestamp |
+| createdAt | string (ISO8601) | Record creation timestamp |
+
+### Relationship
+
+```
+User (1) ──────< Email (many)
+```
+
+A user can have multiple email addresses. Exactly one must be marked as primary. The primary email must be verified.
+
+## Table Schema
+
+**Table Name:** `UserServiceTable`
+
+### Primary Key Structure
+
+| PK | SK | Description |
+|----|----| ------------|
+| `USER#{userId}` | `PROFILE` | User profile record |
+| `USER#{userId}` | `EMAIL#{emailId}` | Email record for user |
+
+### Global Secondary Index (GSI1)
+
+**Purpose:** Look up users and emails by email address
+
+| GSI1PK | GSI1SK | Description |
+|--------|--------|-------------|
+| `EMAIL#{normalizedEmail}` | `USER#{userId}` | Email to user mapping |
+
+### Complete Table Layout
+
+```
+┌─────────────────────┬──────────────────────┬─────────────────────────┬─────────────────────┬─────────────────┐
+│ PK                  │ SK                   │ GSI1PK                  │ GSI1SK              │ Attributes      │
+├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
+│ USER#abc-123        │ PROFILE              │ EMAIL#john@example.com  │ USER#abc-123        │ firstName,      │
+│                     │                      │                         │                     │ lastName,       │
+│                     │                      │                         │                     │ status, etc.    │
+├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
+│ USER#abc-123        │ EMAIL#email-001      │ EMAIL#john@example.com  │ USER#abc-123        │ isPrimary: true │
+│                     │                      │                         │                     │ isVerified: true│
+├─────────────────────┼──────────────────────┼─────────────────────────┼─────────────────────┼─────────────────┤
+│ USER#abc-123        │ EMAIL#email-002      │ EMAIL#john.work@co.com  │ USER#abc-123        │ isPrimary: false│
+│                     │                      │                         │                     │ isVerified: true│
+└─────────────────────┴──────────────────────┴─────────────────────────┴─────────────────────┴─────────────────┘
+```
+
+## Access Patterns
+
+<AccordionGroup>
+  <Accordion title="Get user by userId">
+    **Operation:** GetItem  
+    **Key:** `PK = USER#{userId}, SK = PROFILE`  
+    **Use case:** Load user profile for authenticated user
+  </Accordion>
+  
+  <Accordion title="Get all emails for user">
+    **Operation:** Query  
+    **Key:** `PK = USER#{userId}, SK begins_with EMAIL#`  
+    **Use case:** List all email addresses for user settings page
+  </Accordion>
+  
+  <Accordion title="Get user by email address">
+    **Operation:** Query on GSI1  
+    **Key:** `GSI1PK = EMAIL#{normalizedEmail}`  
+    **Use case:** Look up user during login, check email uniqueness
+  </Accordion>
+  
+  <Accordion title="Check if email exists">
+    **Operation:** Query on GSI1 (limit 1)  
+    **Key:** `GSI1PK = EMAIL#{normalizedEmail}`  
+    **Use case:** Validate email uniqueness before adding
+  </Accordion>
+  
+  <Accordion title="Get user profile with emails">
+    **Operation:** Query  
+    **Key:** `PK = USER#{userId}`  
+    **Use case:** Load complete user data (profile + all emails) in single query
+  </Accordion>
+</AccordionGroup>
+
+## Email Normalization
+
+Emails are normalized before storage and lookup:
+
+1. Convert to lowercase
+2. Trim whitespace
+3. For Gmail: remove dots and plus-addressing (`john.doe+spam@gmail.com` → `johndoe@gmail.com`)
+
+<Note>
+Gmail normalization is optional and depends on business requirements. Some services intentionally allow plus-addressing for filtering.
+</Note>
+
+## Data Integrity Constraints
+
+### Email Uniqueness
+
+DynamoDB has no native UNIQUE constraint. We enforce uniqueness through:
+
+1. **Query GSI1** before insert to check if email exists
+2. **Conditional write** with `attribute_not_exists(PK)` on the email record
+3. **Race condition handling** via optimistic concurrency
+
+```
+// Pseudo-code for adding email
+const existing = await queryGSI1(normalizedEmail);
+if (existing.length > 0) {
+  throw new ConflictError('Email already in use');
+}
+
+await putItem({
+  ...emailRecord,
+  ConditionExpression: 'attribute_not_exists(PK)'
+});
+```
+
+### Primary Email Invariant
+
+Exactly one email per user must be primary. Enforced via **TransactWriteItems**:
+
+```
+// Changing primary email atomically
+TransactWriteItems([
+  {
+    Update: {
+      Key: { PK: 'USER#123', SK: 'EMAIL#old-email-id' },
+      UpdateExpression: 'SET isPrimary = :false',
+    }
+  },
+  {
+    Update: {
+      Key: { PK: 'USER#123', SK: 'EMAIL#new-email-id' },
+      UpdateExpression: 'SET isPrimary = :true',
+      ConditionExpression: 'isVerified = :true'  // Must be verified
+    }
+  },
+  {
+    Update: {
+      Key: { PK: 'USER#123', SK: 'PROFILE' },
+      UpdateExpression: 'SET email = :newEmail, updatedAt = :now'
+    }
+  }
+])
+```
+
+### Optimistic Locking
+
+Concurrent updates are handled via version number:
+
+```
+await updateItem({
+  Key: { PK: 'USER#123', SK: 'PROFILE' },
+  UpdateExpression: 'SET firstName = :name, version = version + 1',
+  ConditionExpression: 'version = :expectedVersion'
+});
+```
+
+If another request updated the record, the condition fails with `ConditionalCheckFailedException`.
+
+## Capacity Planning
+
+| Mode | When to Use |
+|------|-------------|
+| **On-Demand** | Unpredictable traffic, new service, spiky workloads |
+| **Provisioned** | Steady-state traffic, cost optimization, predictable growth |
+
+<Tip>
+Start with on-demand capacity. After 2-4 weeks of production data, analyze CloudWatch metrics to determine if provisioned capacity with auto-scaling would be more cost-effective.
+</Tip>
+
+### GSI Capacity
+
+GSI has **separate capacity** from the base table. Monitor GSI throttling independently:
+
+- `ConsumedReadCapacityUnits` for GSI1
+- `ConsumedWriteCapacityUnits` for GSI1
+- `ThrottledRequests` for GSI1

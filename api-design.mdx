@@ -1,0 +1,418 @@
+---
+title: 'API Design'
+description: 'REST endpoints, request/response schemas, and edge case handling'
+---
+
+## API Overview
+
+The User Service exposes RESTful endpoints for managing users and their email addresses. All endpoints require authentication via Cognito JWT tokens.
+
+**Base URL:** `https://api.example.com/v1`
+
+## User Endpoints
+
+### Get Current User
+
+Retrieve the authenticated user's profile.
+
+<ParamField path="/users/me" method="GET">
+  Returns the current user's profile data.
+</ParamField>
+
+**Response:**
+```json
+{
+  "userId": "abc-123-def",
+  "email": "john@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+1234567890",
+  "status": "active",
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T14:22:00Z"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 200 | Success |
+| 401 | Missing or invalid JWT |
+| 404 | User not found in DynamoDB (data sync issue) |
+
+---
+
+### Update Current User
+
+Update the authenticated user's profile.
+
+<ParamField path="/users/me" method="PUT">
+  Updates profile fields. Partial updates supported.
+</ParamField>
+
+**Request:**
+```json
+{
+  "firstName": "Jonathan",
+  "lastName": "Doe",
+  "phone": "+1987654321"
+}
+```
+
+**Response:**
+```json
+{
+  "userId": "abc-123-def",
+  "email": "john@example.com",
+  "firstName": "Jonathan",
+  "lastName": "Doe",
+  "phone": "+1987654321",
+  "status": "active",
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-21T09:15:00Z"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 200 | Success |
+| 400 | Invalid request body |
+| 401 | Missing or invalid JWT |
+| 409 | Conflict (concurrent update, version mismatch) |
+
+---
+
+### Delete Current User
+
+Soft-delete the authenticated user's account.
+
+<ParamField path="/users/me" method="DELETE">
+  Sets user status to `deleted`. Does not remove data.
+</ParamField>
+
+**Response:**
+```json
+{
+  "message": "Account scheduled for deletion",
+  "deletedAt": "2024-01-21T09:30:00Z"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 200 | Success |
+| 401 | Missing or invalid JWT |
+
+<Note>
+Soft delete is used to maintain referential integrity. Downstream services receive a `user.deleted` event to handle cleanup (cancel pending bookings, final invoices, etc.).
+</Note>
+
+---
+
+## Email Endpoints
+
+### List User Emails
+
+Get all email addresses for the current user.
+
+<ParamField path="/users/me/emails" method="GET">
+  Returns all emails associated with the user.
+</ParamField>
+
+**Response:**
+```json
+{
+  "emails": [
+    {
+      "emailId": "email-001",
+      "email": "john@example.com",
+      "isPrimary": true,
+      "isVerified": true,
+      "verifiedAt": "2024-01-15T10:35:00Z",
+      "createdAt": "2024-01-15T10:30:00Z"
+    },
+    {
+      "emailId": "email-002",
+      "email": "john.work@company.com",
+      "isPrimary": false,
+      "isVerified": true,
+      "verifiedAt": "2024-01-18T14:00:00Z",
+      "createdAt": "2024-01-18T13:45:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### Add Email
+
+Add a new email address to the user's account.
+
+<ParamField path="/users/me/emails" method="POST">
+  Adds a new email. Verification required before use.
+</ParamField>
+
+**Request:**
+```json
+{
+  "email": "john.personal@gmail.com"
+}
+```
+
+**Response:**
+```json
+{
+  "emailId": "email-003",
+  "email": "john.personal@gmail.com",
+  "isPrimary": false,
+  "isVerified": false,
+  "createdAt": "2024-01-21T10:00:00Z"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 201 | Email added, verification sent |
+| 400 | Invalid email format |
+| 409 | Email already in use |
+| 429 | Too many emails (max 5 per user) |
+
+---
+
+### Delete Email
+
+Remove an email address from the user's account.
+
+<ParamField path="/users/me/emails/{emailId}" method="DELETE">
+  Removes the specified email.
+</ParamField>
+
+| Status | Description |
+|--------|-------------|
+| 204 | Email deleted |
+| 400 | Cannot delete primary email |
+| 400 | Cannot delete last email |
+| 404 | Email not found |
+
+---
+
+### Request Verification
+
+Send a verification code to an unverified email.
+
+<ParamField path="/users/me/emails/{emailId}/verify" method="POST">
+  Sends verification code. Rate limited.
+</ParamField>
+
+**Response:**
+```json
+{
+  "message": "Verification code sent",
+  "expiresIn": 900
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 200 | Code sent |
+| 400 | Email already verified |
+| 429 | Rate limit (max 3/hour) |
+
+---
+
+### Confirm Verification
+
+Confirm email ownership with verification code.
+
+<ParamField path="/users/me/emails/{emailId}/verify/confirm" method="POST">
+  Confirms the verification code.
+</ParamField>
+
+**Request:**
+```json
+{
+  "code": "123456"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| 200 | Email verified |
+| 400 | Invalid or expired code |
+| 429 | Too many attempts (max 5) |
+
+---
+
+### Set Primary Email
+
+Set an email as the user's primary email address.
+
+<ParamField path="/users/me/emails/{emailId}/primary" method="PUT">
+  Designates this email as primary.
+</ParamField>
+
+| Status | Description |
+|--------|-------------|
+| 200 | Primary email updated |
+| 400 | Email not verified |
+| 404 | Email not found |
+
+---
+
+## Edge Cases
+
+### Cannot Delete Primary Email
+
+**Scenario:** User tries to delete their primary email.
+
+**Handling:**
+```json
+{
+  "statusCode": 400,
+  "error": "Bad Request",
+  "message": "Cannot delete primary email. Set another email as primary first."
+}
+```
+
+**Why:** Primary email is used for account recovery and critical notifications. User must explicitly choose a replacement.
+
+---
+
+### Cannot Delete Last Email
+
+**Scenario:** User tries to delete their only email address.
+
+**Handling:**
+```json
+{
+  "statusCode": 400,
+  "error": "Bad Request", 
+  "message": "Cannot delete last email. Account must have at least one email."
+}
+```
+
+**Why:** Email is required for account recovery. Deleting all emails would orphan the account.
+
+---
+
+### Duplicate Email
+
+**Scenario:** User tries to add an email that's already in use (by them or another user).
+
+**Handling:**
+```json
+{
+  "statusCode": 409,
+  "error": "Conflict",
+  "message": "Email address is not available"
+}
+```
+
+**Why:** Generic message prevents email enumeration attacks.
+
+---
+
+### Unverified Email as Primary
+
+**Scenario:** User tries to set an unverified email as primary.
+
+**Handling:**
+```json
+{
+  "statusCode": 400,
+  "error": "Bad Request",
+  "message": "Email must be verified before setting as primary"
+}
+```
+
+**Why:** Primary email is used for critical account functions. Ownership must be confirmed.
+
+---
+
+### Verification Rate Limiting
+
+**Scenario:** User requests too many verification codes.
+
+**Handling:**
+```json
+{
+  "statusCode": 429,
+  "error": "Too Many Requests",
+  "message": "Verification limit reached. Try again in 45 minutes.",
+  "retryAfter": 2700
+}
+```
+
+**Limits:**
+- 3 verification requests per email per hour
+- 5 confirmation attempts per code
+
+---
+
+### Concurrent Update Conflict
+
+**Scenario:** Two requests update the same user simultaneously.
+
+**Handling:**
+```json
+{
+  "statusCode": 409,
+  "error": "Conflict",
+  "message": "Resource was modified. Please refresh and try again."
+}
+```
+
+**Implementation:** Optimistic locking with version number. Second request fails condition check.
+
+---
+
+## Request Validation
+
+### Email Format
+
+```typescript
+const emailSchema = z.string()
+  .email()
+  .max(254)
+  .transform(email => email.toLowerCase().trim());
+```
+
+### Phone Format
+
+```typescript
+const phoneSchema = z.string()
+  .regex(/^\+[1-9]\d{1,14}$/)  // E.164 format
+  .optional();
+```
+
+### Name Fields
+
+```typescript
+const nameSchema = z.string()
+  .min(1)
+  .max(100)
+  .regex(/^[\p{L}\p{M}\s'-]+$/u);  // Unicode letters, marks, spaces, hyphens, apostrophes
+```
+
+---
+
+## Error Response Format
+
+All errors follow a consistent format:
+
+```json
+{
+  "statusCode": 400,
+  "error": "Bad Request",
+  "message": "Human-readable error message",
+  "details": [
+    {
+      "field": "email",
+      "message": "Invalid email format"
+    }
+  ],
+  "requestId": "req-abc-123"
+}
+```
+
+The `requestId` enables correlation with CloudWatch logs for debugging.
