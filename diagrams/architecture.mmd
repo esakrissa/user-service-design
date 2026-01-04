@@ -1,0 +1,55 @@
+graph TB
+    subgraph "Client Layer"
+        APP[Web/Mobile App]
+    end
+    
+    subgraph "Authentication"
+        COG[AWS Cognito]
+    end
+    
+    subgraph "API Layer"
+        APIGW[API Gateway]
+        AUTH[Cognito Authorizer]
+    end
+    
+    subgraph "User Service - Lambda Functions"
+        UH[User Handlers]
+        EH[Email Handlers]
+        TRG[Cognito Triggers]
+    end
+    
+    subgraph "Data Layer"
+        DDB[(DynamoDB<br/>Single Table)]
+    end
+    
+    subgraph "Event Bus"
+        EB[EventBridge]
+        DLQ[SQS Dead Letter Queue]
+    end
+    
+    subgraph "Downstream Services"
+        SVC1[Booking Service]
+        SVC2[Notification Service]
+        SVC3[Billing Service]
+        SVC4[Analytics Service]
+    end
+    
+    APP -->|Authenticate| COG
+    COG -->|JWT Token| APP
+    APP -->|API Request| APIGW
+    APIGW --> AUTH
+    AUTH -->|Validate Token| COG
+    AUTH -->|Authorized| APIGW
+    APIGW -->|Invoke| UH
+    APIGW -->|Invoke| EH
+    COG -->|Post-Confirmation| TRG
+    TRG --> DDB
+    UH --> DDB
+    EH --> DDB
+    UH -->|Publish Events| EB
+    EH -->|Publish Events| EB
+    EB --> SVC1
+    EB --> SVC2
+    EB --> SVC3
+    EB --> SVC4
+    EB -.->|Failed Events| DLQ

@@ -44,26 +44,28 @@ graph TB
         SVC4[Analytics Service]
     end
     
-    APP -->|1. Authenticate| COG
+    APP -->|Authenticate| COG
     COG -->|JWT Token| APP
-    APP -->|2. API Request + JWT| APIGW
+    APP -->|API Request| APIGW
     APIGW --> AUTH
     AUTH -->|Validate Token| COG
-    AUTH -->|3. Authorized| APIGW
-    APIGW -->|4. Invoke| UH
-    APIGW -->|4. Invoke| EH
+    AUTH -->|Authorized| APIGW
+    APIGW -->|Invoke| UH
+    APIGW -->|Invoke| EH
     COG -->|Post-Confirmation| TRG
     TRG --> DDB
     UH --> DDB
     EH --> DDB
-    UH -->|5. Publish Events| EB
-    EH -->|5. Publish Events| EB
+    UH -->|Publish Events| EB
+    EH -->|Publish Events| EB
     EB --> SVC1
     EB --> SVC2
     EB --> SVC3
     EB --> SVC4
     EB -.->|Failed Events| DLQ
 ```
+
+<sub>[View full diagram](/diagrams/architecture.svg)</sub>
 
 ## Component Breakdown
 
