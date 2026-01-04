@@ -411,7 +411,7 @@ sequenceDiagram
     EventBridge-->>OutboxPoller: Success
     OutboxPoller->>DynamoDB: Delete from outbox
 ```
-<sub>[View full diagram](/diagrams/outbox-pattern.svg)</sub>
+<sub>[View full diagram](/diagrams/outbox-pattern-light.svg)</sub>
 
 ```typescript
 // In handler - atomic write
@@ -503,7 +503,7 @@ graph TD
         EB -.->|Sync operations| SYNC[Still work]
     end
 ```
-<sub>[View full diagram](/diagrams/blast-radius.svg)</sub>
+<sub>[View full diagram](/diagrams/blast-radius-light.svg)</sub>
 
 ### Recovery Runbooks
 
