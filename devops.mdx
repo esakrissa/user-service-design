@@ -588,14 +588,9 @@ A comprehensive testing approach ensures reliability without slowing down develo
 
 ### Testing Pyramid
 
-```
-         /\
-        /  \     E2E Tests (few, slow, expensive)
-       /----\
-      /      \   Integration Tests (some, medium)
-     /--------\
-    /          \ Unit Tests (many, fast, cheap)
-   --------------
+```mermaid
+graph BT
+    UNIT["Unit Tests (Many, Fast, Cheap)"] --> INT["Integration Tests (Some, Medium)"] --> E2E["E2E Tests (Few, Slow, Expensive)"]
 ```
 
 ### Unit Tests
