@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50" fill="none">
   <rect width="50" height="50" rx="10" fill="#40916C"/>
-  <path d="M29 8V35C29 40 25 44 18 44C12 44 9 40 9 36" stroke="#1B4332" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M29 12V34C29 38 26 41 21 41C16 41 14 38 14 35" stroke="#1B4332" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
   <text x="60" y="33" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#D8F3DC">User Service</text>
 </svg>
