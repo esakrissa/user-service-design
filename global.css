@@ -1,0 +1,5 @@
+header > a > span,
+header a[href="/"] span {
+  font-size: 1.35rem !important;
+  font-weight: 600 !important;
+}

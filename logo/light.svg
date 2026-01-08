@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50" fill="none">
-  <rect width="50" height="50" rx="10" fill="#2D6A4F"/>
-  <path d="M29 12V34C29 38 26 41 21 41C16 41 14 38 14 35" stroke="#FFFFFF" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
-  <text x="60" y="33" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#1B4332">User Service</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" fill="none">
+  <rect width="40" height="40" rx="8" fill="#2D6A4F"/>
+  <path d="M24 10V27C24 30 22 33 18 33C14 33 12 30 12 28" stroke="#FFFFFF" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text x="48" y="27" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#1B4332">User Service</text>
 </svg>
